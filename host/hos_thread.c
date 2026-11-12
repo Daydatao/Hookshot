@@ -590,12 +590,12 @@ static int serial_name(const char *name) { return strstr(name, "MainThread") || 
 int hos_thread_serial(const HosThread *t) { return t && __atomic_load_n(&t->serial, __ATOMIC_RELAXED); }
 
 /* The processors this process may run on (its affinity mask, as the game starts with it): Windows with one processor
-   group; 0 = not known (more than one group, or elsewhere). Up to SHORT_SLEEP_TIMER_THREADS of them, the host keeps the
-   behaviour measured best there (sleep_ns's timer, hos_spin_ns's one spin). */
+   group, and POSIX; 0 = not known (more than one group, or web). Up to SHORT_SLEEP_TIMER_THREADS of them, the host keeps
+   the behaviour measured best there (sleep_ns's timer, hos_spin_ns's one spin). */
 enum { SHORT_SLEEP_TIMER_THREADS = 6 };
 static int process_threads(void) {
     int threads = 0;
-#if defined(_WIN32)   /* (measured on Windows only) */
+#if !defined(__EMSCRIPTEN__)
     /* (with more than one processor group the mask is one group's, not the process's: not known then) */
     DWORD_PTR proc = 0, sys = 0;
     if (GetActiveProcessorGroupCount() == 1 && GetProcessAffinityMask(GetCurrentProcess(), &proc, &sys))

@@ -283,6 +283,7 @@ typedef struct {
     union { struct { BYTE Flags; } ProcessorCore; ULONGLONG Reserved[2]; };
 } SYSTEM_LOGICAL_PROCESSOR_INFORMATION, *PSYSTEM_LOGICAL_PROCESSOR_INFORMATION;
 BOOL GetLogicalProcessorInformation(SYSTEM_LOGICAL_PROCESSOR_INFORMATION *info, DWORD *len);
+static inline WORD GetActiveProcessorGroupCount(void) { return 1; }
 typedef struct {
     WORD wProcessorArchitecture, wReserved;
     DWORD dwPageSize;

@@ -94,6 +94,11 @@ def main():
 
     src = (ROOT / "host" / "hos_thread.c").read_text(encoding="utf-8")
     check(LIMIT in src, "host/hos_thread.c no longer has '%s'" % LIMIT)
+    procs = block(src, LIMIT)
+    check("_WIN32" not in procs and "!defined(__EMSCRIPTEN__)" in procs,
+          "process_threads is gated by _WIN32 again instead of running on POSIX too")
+    win_h = (ROOT / "host" / "posix" / "windows.h").read_text(encoding="utf-8")
+    check("GetActiveProcessorGroupCount(void)" in win_h, "host/posix/windows.h lacks GetActiveProcessorGroupCount")
     parts = {"@NAMES@": block(src, NAMES), "@SERIAL@": block(src, SERIAL), "@SPIN@": block(src, SPIN), "@LIMIT@": LIMIT}
     check("const int threads = process_threads();" in src, "sleep_ns no longer counts the processors with process_threads")
     # (wired: a thread's flag follows its name, and every spin asks hos_spin_ns)
