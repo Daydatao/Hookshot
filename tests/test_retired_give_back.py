@@ -28,7 +28,8 @@ def check_source():
                    # (what is queued is not asked for twice, by this valve or by imports_give_back's)
                    "retired_give_back::settled(used, dead_import_bytes), budget, high, low)",
                    "if (retired_mode() == retired_give_back::Mode::GRACE) used = retired_give_back::settled(used, dead_import_bytes);",
-                   "const uint64_t cap = retired_give_back::live_budget(budget, env_high && *env_high);",
+                   'static const int cap_mb = env_int("RX_VK_IMPORT_CAP_MB", -1);',
+                   "const uint64_t cap = retired_give_back::live_budget(budget, (env_high && *env_high) || (env_low && *env_low), cap_mb);",
                    "const uint64_t want = retired_give_back::want(used, cap, high, low);",
                    "dead_import_bytes += p.hi - p.lo;",
                    "dead_import_bytes -= std::min(dead_import_bytes, dead_imports.front().bytes);"):
