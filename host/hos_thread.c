@@ -139,7 +139,7 @@ int hos_thread_priority(HosThread *t, int set, int value) {
     return old;
 }
 
-#if defined(_WIN32) && !defined(__EMSCRIPTEN__)
+#if !defined(__EMSCRIPTEN__)
 static SRWLOCK log_lock = SRWLOCK_INIT, log_write_lock = SRWLOCK_INIT;
 static CONDITION_VARIABLE log_cv = CONDITION_VARIABLE_INIT;
 static char *log_q[2048];

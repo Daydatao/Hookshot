@@ -1,7 +1,76 @@
 /* The host's log writer (host/hos_thread.c, the Windows queue, log_main and log_flush) extracted unmodified, with the CRT
    stream calls as spies: what goes out, in how many writes, and when. Real threads, SRW locks and condition variables. */
+#ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#else
+#include <pthread.h>
+#include <stdint.h>
+#include <time.h>
+#include <unistd.h>
+typedef void *HANDLE;
+typedef uint32_t DWORD;
+typedef int32_t LONG;
+typedef uint64_t ULONGLONG;
+typedef int BOOL;
+#define WINAPI
+#define INFINITE 0xFFFFFFFFu
+#define STD_ERROR_HANDLE ((DWORD)-12)
+#define EXCEPTION_CONTINUE_SEARCH 0
+typedef struct { int unused; } EXCEPTION_POINTERS;
+typedef LONG (*LPTOP_LEVEL_EXCEPTION_FILTER)(EXCEPTION_POINTERS *);
+static LPTOP_LEVEL_EXCEPTION_FILTER SetUnhandledExceptionFilter(LPTOP_LEVEL_EXCEPTION_FILTER f) { return f; }
+static HANDLE GetStdHandle(DWORD w) { (void)w; return (HANDLE)(intptr_t)2; }
+static BOOL WriteFile(HANDLE h, const void *b, DWORD n, DWORD *w, void *o) {
+    (void)h, (void)o;
+    ssize_t r = write(STDERR_FILENO, b, n);
+    if (w) *w = r > 0 ? (DWORD)r : 0;
+    return r >= 0;
+}
+#define _strdup strdup
+#define InterlockedIncrement(p) __atomic_add_fetch((p), 1, __ATOMIC_SEQ_CST)
+typedef pthread_mutex_t SRWLOCK;
+#define SRWLOCK_INIT PTHREAD_MUTEX_INITIALIZER
+static void AcquireSRWLockExclusive(SRWLOCK *l) { pthread_mutex_lock(l); }
+static void ReleaseSRWLockExclusive(SRWLOCK *l) { pthread_mutex_unlock(l); }
+static BOOL TryAcquireSRWLockExclusive(SRWLOCK *l) { return pthread_mutex_trylock(l) == 0; }
+typedef pthread_cond_t CONDITION_VARIABLE;
+#define CONDITION_VARIABLE_INIT PTHREAD_COND_INITIALIZER
+static void WakeConditionVariable(CONDITION_VARIABLE *cv) { pthread_cond_signal(cv); }
+static ULONGLONG GetTickCount64(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (ULONGLONG)ts.tv_sec * 1000 + (ULONGLONG)ts.tv_nsec / 1000000;
+}
+static BOOL SleepConditionVariableSRW(CONDITION_VARIABLE *cv, SRWLOCK *l, DWORD ms, DWORD flags) {
+    (void)flags;
+    if (ms == INFINITE) return pthread_cond_wait(cv, l) == 0;
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    ts.tv_sec += ms / 1000;
+    ts.tv_nsec += (long)(ms % 1000) * 1000000L;
+    if (ts.tv_nsec >= 1000000000L) ts.tv_sec++, ts.tv_nsec -= 1000000000L;
+    return pthread_cond_timedwait(cv, l, &ts) == 0;
+}
+static void Sleep(DWORD ms) { usleep((useconds_t)ms * 1000); }
+static DWORD GetCurrentThreadId(void) { return (DWORD)(uintptr_t)pthread_self(); }
+typedef struct { DWORD (*fn)(void *); void *arg; } PosixThreadStart;
+static void *posix_thread_entry(void *p) {
+    PosixThreadStart s = *(PosixThreadStart *)p;
+    free(p);
+    s.fn(s.arg);
+    return NULL;
+}
+static HANDLE CreateThread(void *a, size_t st, DWORD (*fn)(void *), void *arg, DWORD f, DWORD *id) {
+    (void)a, (void)st, (void)f, (void)id;
+    PosixThreadStart *s = (PosixThreadStart *)malloc(sizeof *s);
+    s->fn = fn, s->arg = arg;
+    pthread_t th;
+    if (pthread_create(&th, NULL, posix_thread_entry, s) != 0) { free(s); return NULL; }
+    pthread_detach(th);
+    return (HANDLE)(uintptr_t)1;
+}
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

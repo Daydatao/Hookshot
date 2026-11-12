@@ -17,7 +17,6 @@ import sys
 import tempfile
 
 RUN_ALL_ARGS = ["--cc", "gcc"]
-RUN_ALL_SKIP = {"linux": "the Windows log writer: SRW locks and threads"}
 
 ROOT = Path(__file__).resolve().parents[1]
 # (the batch case on a 1 s wait: its 120 ms of lines and checks stay well inside it on a busy runner)
@@ -25,11 +24,11 @@ CASES = {"batch": "1000", "default": None, "off": "0", "burst": "2000", "flush":
 
 
 def log_block(source):
-    start_marker = "#if defined(_WIN32) && !defined(__EMSCRIPTEN__)\nstatic SRWLOCK log_lock"
+    start_marker = "#if !defined(__EMSCRIPTEN__)\nstatic SRWLOCK log_lock"
     end_marker = "\n#else\nstatic int log_queue("
     if source.count(start_marker) != 1 or source.count(end_marker) != 1:
-        raise SystemExit("FAIL: the Windows log queue block of host/hos_thread.c was not found")
-    start = source.index(start_marker) + len("#if defined(_WIN32) && !defined(__EMSCRIPTEN__)\n")
+        raise SystemExit("FAIL: the log queue block of host/hos_thread.c was not found")
+    start = source.index(start_marker) + len("#if !defined(__EMSCRIPTEN__)\n")
     return source[start:source.index(end_marker)]
 
 
@@ -38,9 +37,6 @@ def main():
     p.add_argument("--cc", default=os.environ.get("CC") or shutil.which("gcc") or shutil.which("clang") or "gcc")
     p.add_argument("--source", type=Path, default=ROOT / "host/hos_thread.c")
     a = p.parse_args()
-    if os.name != "nt":
-        print("skipped: the Windows log writer")
-        return 0
     template = (ROOT / "tests/log_batch_test.c").read_text(encoding="utf-8")
     fixture = template.replace("/* ACTUAL_LOG */", log_block(a.source.read_text(encoding="utf-8")))
     failed = []
@@ -48,7 +44,10 @@ def main():
         c_file, exe = Path(temp) / "fixture.c", Path(temp) / "fixture.exe"
         c_file.write_text(fixture, encoding="utf-8")
         cmd = [a.cc, "-std=gnu11", "-O1", "-Wall", "-Wextra", "-Werror", "-include", str(ROOT / "gpu/vk/compat/hookshot_env.h"),
-               str(c_file), "-o", str(exe)]   # (env_on, the switches' rule)
+               str(c_file)]   # (env_on, the switches' rule)
+        if os.name != "nt":
+            cmd += ["-pthread"]
+        cmd += ["-o", str(exe)]
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
         if result.returncode:
             print(result.stdout + result.stderr)
