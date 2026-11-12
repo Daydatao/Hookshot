@@ -191,6 +191,29 @@ static HThread *thread_new(void) {
     monitor_init(&t->mu, &t->cv);
     return t;
 }
+/* The process's affinity as the process started: Windows keeps a process mask apart from its threads' masks, Linux has
+   only the threads'. Read from the asking thread each time, it was that thread's own mask, which shrank once hos_thread_pin
+   pinned it off the reserved core: the Presentation Thread's pin, asked for from a game thread kept off that core, then
+   saw no reserved core in the "process" mask and kept the Presentation Thread off it too, against render_thread_on_reserved
+   (host/hos_thread.c; Ryzen 9 9950X3D, 2026-11-09). Taken once, before main, when no thread is pinned yet.
+   Also applied when a thread first registers here (CreateThread's thread_entry, or a std::thread in thread_self on its
+   first GetCurrentThread call in SetThreadDescription / SetThreadPriority), so a thread made inside a pinned replay
+   (ReplayPin in gpu/vk/vk_replay.cpp) starts with the process's affinity as on Windows rather than inheriting the pin. */
+static DWORD_PTR process_affinity;
+__attribute__((constructor)) static void init_process_affinity(void) {
+    cpu_set_t s;
+    CPU_ZERO(&s);
+    if (sched_getaffinity(0, sizeof s, &s) == 0)
+        for (int i = 0; i < 64; i++) if (CPU_ISSET(i, &s)) process_affinity |= (DWORD_PTR)1 << i;
+}
+static void apply_process_affinity(pthread_t th) {
+    if (!process_affinity) init_process_affinity();
+    if (!process_affinity) return;
+    cpu_set_t want;
+    CPU_ZERO(&want);
+    for (int i = 0; i < 64; i++) if (process_affinity >> i & 1) CPU_SET(i, &want);
+    pthread_setaffinity_np(th, sizeof want, &want);
+}
 static HThread *thread_self(void) {
     if (!self_thread) {   /* (a thread this file did not start: the main thread, a library's) */
         HThread *t = thread_new();
@@ -198,6 +221,7 @@ static HThread *thread_self(void) {
         t->tid = (pid_t)syscall(SYS_gettid);
         t->refs = 1;   /* (kept for the thread's life) */
         self_thread = t;
+        apply_process_affinity(t->th);
     }
     return self_thread;
 }
@@ -220,6 +244,7 @@ static void *thread_entry(void *p) {
     HThread *t = (HThread *)p;
     self_thread = t;
     t->tid = (pid_t)syscall(SYS_gettid);
+    apply_process_affinity(t->th);
     thread_finish(t->fn(t->arg));
     return NULL;
 }
@@ -293,18 +318,6 @@ DWORD_PTR SetThreadAffinityMask(HANDLE h, DWORD_PTR mask) {
     DWORD_PTR r = 0;
     for (int i = 0; i < 64; i++) if (CPU_ISSET(i, &old)) r |= (DWORD_PTR)1 << i;
     return r ? r : 1;
-}
-/* The process's affinity as the process started: Windows keeps a process mask apart from its threads' masks, Linux has
-   only the threads'. Read from the asking thread each time, it was that thread's own mask, which shrank once hos_thread_pin
-   pinned it off the reserved core: the Presentation Thread's pin, asked for from a game thread kept off that core, then
-   saw no reserved core in the "process" mask and kept the Presentation Thread off it too, against render_thread_on_reserved
-   (host/hos_thread.c; Ryzen 9 9950X3D, 2026-11-09). Taken once, before main, when no thread is pinned yet. */
-static DWORD_PTR process_affinity;
-__attribute__((constructor)) static void init_process_affinity(void) {
-    cpu_set_t s;
-    CPU_ZERO(&s);
-    if (sched_getaffinity(0, sizeof s, &s) == 0)
-        for (int i = 0; i < 64; i++) if (CPU_ISSET(i, &s)) process_affinity |= (DWORD_PTR)1 << i;
 }
 BOOL GetProcessAffinityMask(HANDLE p, DWORD_PTR *proc, DWORD_PTR *sys) {
     (void)p;
