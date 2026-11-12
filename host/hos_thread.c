@@ -624,8 +624,8 @@ static const NameSpec *match_name_spec(const NameSpec *s, int n, const char *nam
    the core, and the same for every core of a CPU of one kind (the last core, as before). Only with 4+ cores of the
    fastest kind (8+ logical processors always have them on a CPU of one kind): a laptop's 2 performance cores and 8
    efficiency ones (i5-1235U) would keep one of the two from the game; then none is kept. The calling thread's
-   processor group's cores: the masks the affinity calls take are its group's. Windows only: Linux keeps the last core,
-   as before. */
+   processor group's cores: the masks the affinity calls take are its group's. On Linux the same choice from
+   /sys/devices/cpu_core/cpus (Intel's hybrid CPUs; last_fastest_core below); without that file, the last core, as before. */
 /* (hookshot) The cores that share the largest L3, on a CPU whose cores do not all share one of the same size: AMD's X3D CPUs
    with two CCDs (7900X3D, 7950X3D, 9900X3D, 9950X3D) have the 3D V-Cache on one CCD only (96 MB against 32 MB). Windows
    moves a game there only when its Game Bar knows the program as a game; this one it does not know, so its threads ran on
@@ -841,6 +841,57 @@ static uint64_t last_fastest_core(int *cores) {
     return pick_reserved_core(masks, classes, n);
 }
 #endif
+#if !defined(_WIN32) && !defined(__EMSCRIPTEN__)
+/* (hookshot) A Linux cpulist ("0-7", "0-11,16-19") as a mask of logical processors 0-63; 0 when it does not parse.
+   (tests/test_reserved_core.py) */
+static uint64_t parse_cpu_list(const char *s) {
+    uint64_t mask = 0;
+    while (*s && *s != '\n') {
+        char *end;
+        long a = strtol(s, &end, 10), b = a;
+        if (end == s || a < 0) return 0;
+        s = end;
+        if (*s == '-') {
+            b = strtol(++s, &end, 10);
+            if (end == s || b < a) return 0;
+            s = end;
+        }
+        for (long i = a; i <= b && i < 64; i++) mask |= 1ull << i;
+        if (*s == ',') s++;
+        else if (*s && *s != '\n') return 0;
+    }
+    return mask;
+}
+/* (hookshot) Linux: Windows' EfficiencyClass has no file of its own, but on Intel's hybrid CPUs the kernel lists the
+   performance cores' logical processors in /sys/devices/cpu_core/cpus (the hybrid PMU; the efficiency cores are in
+   cpu_atom). Without it the last core was kept, and on those CPUs that is an efficiency core: a Core Ultra 7 265KF's
+   logical processor 19 (P-cores 0-7, E-cores 8-19). Those cores are class 1, the others 0, and pick_reserved_core
+   chooses as on Windows. *cores: 0 when the file is not there (a CPU of one kind, AMD, an older kernel): as before. */
+static uint64_t last_fastest_core(int *cores) {
+    *cores = 0;
+    char line[256] = {0};
+    FILE *f = fopen("/sys/devices/cpu_core/cpus", "r");
+    if (!f) return 0;
+    const bool read = fgets(line, sizeof line, f) != NULL;
+    fclose(f);
+    const uint64_t fast = read ? parse_cpu_list(line) : 0;
+    if (!fast) return 0;
+    SYSTEM_LOGICAL_PROCESSOR_INFORMATION info[64];
+    DWORD len = sizeof info;
+    if (!GetLogicalProcessorInformation(info, &len)) return 0;
+    uint64_t masks[64];
+    unsigned char classes[64];
+    int n = 0;
+    for (DWORD i = 0; i < len / sizeof info[0] && n < 64; i++)
+        if (info[i].Relationship == RelationProcessorCore) {
+            masks[n] = (uint64_t)info[i].ProcessorMask;
+            classes[n] = (masks[n] & fast) != 0;
+            n++;
+        }
+    *cores = n;
+    return pick_reserved_core(masks, classes, n);
+}
+#endif
 uint64_t hos_reserved_cpus(void) {
     static uint64_t mask = ~0ull;
     if (mask != ~0ull) return mask;
@@ -877,6 +928,16 @@ uint64_t hos_reserved_cpus(void) {
         if (cores) {
             mask = fast;
             hos_log("vk: reserved core mask (enhanced): %#llx (%d cores)", (unsigned long long)mask, cores);
+            return mask;
+        }
+    }
+#elif !defined(__EMSCRIPTEN__)
+    {
+        int cores = 0;
+        const uint64_t fast = last_fastest_core(&cores);
+        if (cores) {
+            mask = fast;
+            hos_log("vk: reserved core mask (hybrid, /sys/devices/cpu_core): %#llx (%d cores)", (unsigned long long)mask, cores);
             return mask;
         }
     }

@@ -53,6 +53,7 @@ NX2_RT = os.path.join(kit.HERE, "rt")
 HOST = os.path.join(kit.HERE, "..", "host")
 OPUS = os.path.join(kit.HERE, "..", "third_party", "opus")
 ZSTD = os.path.normpath(os.path.join(kit.HERE, "..", "third_party", "zstd", "lib"))
+ZSTD_HOST = ("prompts.c", "hos_zstd.c")   # (the host files that use it: a mod's size table; the game's stream decode)
 OBJ_CACHE = os.path.join(kit.WORK, "objcache")
 # (hookshot) work/hot_order.txt: the functions that run, hottest first (sampled), packed together by the linker; RX_NO_ORDER=1: off
 PGO = os.environ.get("RX_PGO", "")
@@ -1071,15 +1072,15 @@ def main():
     if dav1d:
         host_deps += open(os.path.join(dav1d, "include", "dav1d", "version.h"), "rb").read()
         print("AV1 movies: dav1d (%s)" % dav1d, flush=True)
-    zstd_api = b"".join(open(os.path.join(ZSTD, f), "rb").read() for f in sorted(os.listdir(ZSTD)) if f.endswith(".h"))   # (prompts.c's)
+    zstd_api = b"".join(open(os.path.join(ZSTD, f), "rb").read() for f in sorted(os.listdir(ZSTD)) if f.endswith(".h"))   # (ZSTD_HOST's)
     jobs += [(cc, s, os.path.join(obj_dir, "host_" + os.path.basename(s)[:-2] + ".o"),
               host_fl + ["-I" + os.path.join(OPUS, "include")] +
               (["-I" + os.path.join(FFMPEG, "include")] if FFMPEG else []) +
               (FFMPEG_LX[0] if LINUX and FFMPEG_LX else []) +
               ([stamp_def] if os.path.basename(s) == "hos_main.c" else []) +
-              (["-I" + ZSTD] if os.path.basename(s) == "prompts.c" else []) +
+              (["-I" + ZSTD] if os.path.basename(s) in ZSTD_HOST else []) +
               (dav1d_fl if os.path.basename(s) in ("nn_video.c", "dav1d_av1.c") else []),
-              host_deps + (zstd_api if os.path.basename(s) == "prompts.c" else b"")) for s in host_srcs]
+              host_deps + (zstd_api if os.path.basename(s) in ZSTD_HOST else b"")) for s in host_srcs]
     # libopus 1.5.2 (third_party/opus, from TOTKPort): nn::codec's hardware Opus decoder (host/nn_codec.c)
     # (hookshot: built for the same CPU target as the rest (CPU), so its float code can be vectorized where the target has
     # AVX2: the vendored copy has no x86 intrinsics files of its own)
@@ -1089,7 +1090,8 @@ def main():
         for rel in open(os.path.join(OPUS, "sources.txt")).read().split():
             jobs.append((cc, os.path.join(OPUS, rel), os.path.join(obj_dir, "opus_" + rel.replace("/", "_")[:-2] + ".o"),
                          oflags, b"opus-1.5.2"))
-    # zstd's decoder (as in the Vulkan back end): host/prompts.c reads a mod's resource size table to merge the prompts' into it
+    # zstd's decoder (as in the Vulkan back end): host/prompts.c reads a mod's resource size table to merge the prompts' into it,
+    # host/hos_zstd.c decodes the game's streams with it (HOS_NATIVE_ZSTD)
     if host_srcs:
         jobs += zstd_jobs(cc, target() + CPU + ["-O2", "-g0", "-DNDEBUG", "-Wno-everything", "-DZSTD_DISABLE_ASM",
                                                 "-DZSTD_LEGACY_SUPPORT=0", "-DZSTD_MULTITHREAD=0"], obj_dir, "zstd_")
@@ -1161,7 +1163,8 @@ def main():
             "-I" + os.path.join(vk, "sirit", "include"), "-I" + os.path.join(vk, "sirit", "src"),
             "-I" + os.path.join(spirv_headers, "include"), "-I" + os.path.join(spirv_headers, "include", "spirv", "unified1"),
             "-I" + os.path.join(vk_headers, "include"), "-I" + os.path.join(vma_headers, "include"),
-            "-I" + vk, "-I" + gen_dir]
+            "-I" + vk, "-I" + gen_dir,
+            "-I" + os.path.join(kit.ROOT, "third_party", "zbic")]
         # (NVIDIA DLSS, a local build's option: scripts/ngx_sdk.py. Only vk_dlss.cpp sees NVIDIA's headers; without them
         # it is the stubs that say DLSS is not there)
         ngx_flags = ["-DHOOKSHOT_NGX", "-I" + os.path.join(NGX_SDK, "include")] if NGX_SDK else []
@@ -1182,19 +1185,17 @@ def main():
         # (hookshot) Dear ImGui (third_party/imgui) draws the overlays over the window's image (gpu/vk/vk_imgui.cpp; vk_menu.cpp
         # draws with it). Its objects see only its own headers; its headers are a dependency of the two files that include them
         imgui = os.path.normpath(os.path.join(kit.HERE, "..", "third_party", "imgui"))
-        zstd = ZSTD   # (the game's font files: vk_imgui.cpp)
-        imgui_flags = ["-I" + imgui, "-I" + zstd, "-DIMGUI_IMPL_VULKAN_NO_PROTOTYPES", "-DIMGUI_DISABLE_DEFAULT_SHELL_FUNCTIONS",
+        zbic = os.path.join(kit.ROOT, "third_party", "zbic")
+        imgui_flags = ["-I" + imgui, "-DIMGUI_IMPL_VULKAN_NO_PROTOTYPES", "-DIMGUI_DISABLE_DEFAULT_SHELL_FUNCTIONS",
                        "-DIMGUI_DISABLE_WIN32_FUNCTIONS", "-DIMGUI_DISABLE_DEMO_WINDOWS", "-DIMGUI_DISABLE_DEBUG_TOOLS"]
-        imgui_deps = b"".join(open(os.path.join(d, f), "rb").read() for d in (imgui, os.path.join(imgui, "backends"), zstd)
+        imgui_deps = b"".join(open(os.path.join(d, f), "rb").read() for d in (imgui, os.path.join(imgui, "backends"), zbic)
                               for f in sorted(os.listdir(d)) if f.endswith(".h"))
         imgui_users = ("vk_imgui.cpp", "vk_menu.cpp")
         for f in ("imgui.cpp", "imgui_draw.cpp", "imgui_tables.cpp", "imgui_widgets.cpp", "backends/imgui_impl_vulkan.cpp"):
             vk_jobs.append((cxx, os.path.join(imgui, *f.split("/")),
                             os.path.join(obj_dir, "vk_imgui_" + os.path.basename(f)[:-4] + ".o"), vflags + imgui_flags, imgui_deps))
-        # (zstd's decoder, third_party/zstd, plain C)
-        zflags = target() + CPU + (["-fPIC"] if LINUX else []) + ["-O2", "-g0", "-DNDEBUG", "-Wno-everything", "-fvisibility=hidden",
-                                                                 "-DZSTD_DISABLE_ASM", "-DZSTD_LEGACY_SUPPORT=0", "-DZSTD_MULTITHREAD=0"]
-        vk_jobs += zstd_jobs(cc, zflags, obj_dir, "vk_zstd_")
+        # (zstd's decoder and encoder: third_party/zbic's single file, built below with the program cache's zstd; it serves
+        # the game's font files too, so the decompression-only third_party/zstd is not built as well)
         # (the bundled fonts, compiled in: nx2/ui_fonts.py's file of the build's own)
         vk_jobs.append((cxx, fonts_cpp, os.path.join(obj_dir, "vk_ui_fonts.o"), target() + (["-fPIC"] if LINUX else []) + ["-O0", "-g0", "-w"],
                         b""))
@@ -1210,6 +1211,13 @@ def main():
                             vk_lib_deps if lib else vdeps + (logo_text if os.path.basename(src) == "vk_imgui.cpp" else b"") +
                             (ngx_deps if os.path.basename(src) == "vk_dlss.cpp" else b"") +
                             (imgui_deps if os.path.basename(src) in imgui_users else b"")))
+        # (hookshot) the program cache's zstd compression (RX_VK_PROGRAM_CACHE_ZSTD): third_party/zbic's single-file
+        # zstd, built as C into the same DLL. Its headers are the object's dependencies.
+        zstd_src = os.path.join(kit.ROOT, "third_party", "zbic", "zstd.c")
+        zstd_deps = b"".join(open(os.path.join(zbic, f), "rb").read() for f in ("zstd.h", "zstd_errors.h"))
+        vk_jobs.append((cc, zstd_src, os.path.join(obj_dir, "vk_zstd.o"),
+                        target() + CPU + (["-fPIC"] if LINUX else []) +
+                        ["-O2", "-g0", "-DNDEBUG", "-Wno-everything", "-fvisibility=hidden", "-I" + zbic], zstd_deps))
         if NGX_SDK and not LINUX and toolchain.mingw():
             # (llvm-mingw: NVIDIA's static library was built with Microsoft's compiler for its static runtime (/MT). What it asks
             # of that runtime: the C parts as for the static FFmpeg (host/mingw_msvc_shims.c), the C++ ones in vk_ngx_msvc_rt.cpp)
