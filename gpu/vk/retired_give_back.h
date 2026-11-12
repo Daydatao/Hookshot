@@ -45,4 +45,12 @@ constexpr uint64_t want(uint64_t used, uint64_t budget, int high, int low) {
     return used > target ? used - target : 0;
 }
 
+/// The system-heap cap for idle live imports (imports_give_back) when RX_VK_IMPORT_HIGH is not set: on 32 GB+ Linux PCs
+/// the heap's budget is 15+ GB, and leaving imports_give_back off above 12 GB (or waiting for 85% of 15 GB) let 200+ idle
+/// unmirrored pools stay in the driver's buffer list and the submit-time capture ranges over a 2 h session (7.4 GB live).
+constexpr uint64_t kLiveBudgetCap = 4500ull << 20;
+constexpr uint64_t live_budget(uint64_t budget, bool env_high_set) {
+    return env_high_set || budget <= kLiveBudgetCap ? budget : kLiveBudgetCap;
+}
+
 } // namespace retired_give_back
